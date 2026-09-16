@@ -1,0 +1,4 @@
+failover.log
+runs.log
+.DS_Store
+__pycache__/

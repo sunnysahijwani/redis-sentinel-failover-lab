@@ -1,0 +1,79 @@
+# Redis high-availability lab: 1 primary + 2 replicas + 3 sentinels.
+# Static IPs make Sentinel's monitoring deterministic (no DNS quirks on failover).
+# Fully self-contained — throwaway containers on an isolated network, no host ports.
+#
+#   docker compose up -d          # start the cluster
+#   ./failover-demo.sh            # write keys, kill the primary, watch it self-heal
+#   ./sweep-down-after.sh         # measure the outage window across down-after settings
+#   docker compose down           # tear everything down
+#
+# DOWN_AFTER (ms) tunes how long Sentinel waits before declaring the primary dead:
+#   DOWN_AFTER=1000 docker compose up -d --force-recreate
+
+services:
+  redis-primary:
+    image: valkey/valkey:8
+    container_name: redis-primary
+    command: valkey-server --save "" --appendonly no --maxmemory-policy noeviction
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.10
+
+  redis-replica-1:
+    image: valkey/valkey:8
+    container_name: redis-replica-1
+    command: valkey-server --save "" --appendonly no --maxmemory-policy noeviction
+             --replicaof 172.28.0.10 6379 --replica-announce-ip 172.28.0.11
+    depends_on: [redis-primary]
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.11
+
+  redis-replica-2:
+    image: valkey/valkey:8
+    container_name: redis-replica-2
+    command: valkey-server --save "" --appendonly no --maxmemory-policy noeviction
+             --replicaof 172.28.0.10 6379 --replica-announce-ip 172.28.0.12
+    depends_on: [redis-primary]
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.12
+
+  # Three sentinels so a failover needs a quorum (2), the way you'd run it in prod.
+  # Each writes its own config at boot (Sentinel rewrites this file, so it can't be shared).
+  # Sentinels deliberately stay redis:8 — same watchers for every engine variant,
+  # so the only changed variable is the data-node engine.
+  redis-sentinel-1: &sentinel
+    image: redis:8
+    container_name: redis-sentinel-1
+    command:
+      - sh
+      - -c
+      - |
+        printf 'port 26379\nsentinel monitor mymaster 172.28.0.10 6379 2\nsentinel down-after-milliseconds mymaster ${DOWN_AFTER:-5000}\nsentinel failover-timeout mymaster 10000\nsentinel parallel-syncs mymaster 1\n' > /etc/sentinel.conf
+        exec redis-sentinel /etc/sentinel.conf
+    depends_on: [redis-primary]
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.21
+
+  redis-sentinel-2:
+    <<: *sentinel
+    container_name: redis-sentinel-2
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.22
+
+  redis-sentinel-3:
+    <<: *sentinel
+    container_name: redis-sentinel-3
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.23
+
+networks:
+  redisnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

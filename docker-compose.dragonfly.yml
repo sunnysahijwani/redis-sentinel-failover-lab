@@ -1,0 +1,70 @@
+# Dragonfly variant of the failover lab — same topology, same THREE redis:8
+# sentinels (identical watchers across engine variants), only the data-node
+# engine changes. Dragonfly documents Redis Sentinel as its HA mechanism.
+#
+#   COMPOSE_FILE=docker-compose.dragonfly.yml DOWN_AFTER=5000 docker compose up -d
+
+services:
+  redis-primary:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    container_name: redis-primary
+    command: ["--logtostderr", "--proactor_threads=2", "--maxmemory=1gb"]
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.10
+
+  redis-replica-1:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    container_name: redis-replica-1
+    command: ["--logtostderr", "--proactor_threads=2", "--maxmemory=1gb",
+              "--replicaof=172.28.0.10:6379"]
+    depends_on: [redis-primary]
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.11
+
+  redis-replica-2:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    container_name: redis-replica-2
+    command: ["--logtostderr", "--proactor_threads=2", "--maxmemory=1gb",
+              "--replicaof=172.28.0.10:6379"]
+    depends_on: [redis-primary]
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.12
+
+  # Sentinels deliberately stay redis:8 — same watchers for every engine variant.
+  redis-sentinel-1: &sentinel
+    image: redis:8
+    container_name: redis-sentinel-1
+    command:
+      - sh
+      - -c
+      - |
+        printf 'port 26379\nsentinel monitor mymaster 172.28.0.10 6379 2\nsentinel down-after-milliseconds mymaster ${DOWN_AFTER:-5000}\nsentinel failover-timeout mymaster 10000\nsentinel parallel-syncs mymaster 1\n' > /etc/sentinel.conf
+        exec redis-sentinel /etc/sentinel.conf
+    depends_on: [redis-primary]
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.21
+
+  redis-sentinel-2:
+    <<: *sentinel
+    container_name: redis-sentinel-2
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.22
+
+  redis-sentinel-3:
+    <<: *sentinel
+    container_name: redis-sentinel-3
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.23
+
+networks:
+  redisnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
